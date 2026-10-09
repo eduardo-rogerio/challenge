@@ -1,0 +1,109 @@
+x-app-env: &app-env
+  env_file:
+    - .env.example
+    - path: .env
+      required: false
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: app
+      POSTGRES_DB: app
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U app -d app"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  localstack:
+    image: localstack/localstack:4.9
+    environment:
+      SERVICES: sqs
+    ports:
+      - "4566:4566"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fs http://localhost:4566/_localstack/health | grep -q '\"sqs\": \"\\(available\\|running\\)\"'"]
+      interval: 3s
+      timeout: 5s
+      retries: 30
+
+  # Cria as filas e a política de redrive; idempotente.
+  queues:
+    image: amazon/aws-cli:2.27.50
+    <<: *app-env
+    entrypoint: ["/bin/sh", "/init-queues.sh"]
+    volumes:
+      - ./deploy/localstack/init-queues.sh:/init-queues.sh:ro
+    depends_on:
+      localstack:
+        condition: service_healthy
+    restart: "no"
+
+  # Aplica as migrations; para reverter use `make migrate-down`.
+  migrate:
+    image: migrate/migrate:v4.18.3
+    <<: *app-env
+    entrypoint: ["/bin/sh", "-c", "exec migrate -path=/migrations -database \"$$DATABASE_URL\" \"$$@\"", "--"]
+    command: ["up"]
+    volumes:
+      - ./migrations:/migrations:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  app:
+    build:
+      context: .
+      target: runtime
+    <<: *app-env
+    command: ["api"]
+    ports:
+      - "8080-8089:8080"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      queues:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/health/ready >/dev/null"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    stop_grace_period: 30s
+
+  # Workers em segundo plano (retomada de referências pendentes). Podem ser escalados: `--scale worker=2`.
+  worker:
+    build:
+      context: .
+      target: runtime
+    <<: *app-env
+    command: ["worker"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    stop_grace_period: 30s
+
+  # Ferramentas Go (build, test, vet, fmt) sem instalar Go no host.
+  dev:
+    build:
+      context: .
+      target: dev
+    image: desafio-dev
+    profiles: ["tools"]
+    <<: *app-env
+    user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
+    working_dir: /app
+    volumes:
+      - .:/app
+      - gocache:/go-cache
+
+volumes:
+  pgdata:
+  gocache:
