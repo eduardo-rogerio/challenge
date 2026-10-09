@@ -412,7 +412,6 @@ internal/platform/       config, logging, métricas, ids (UUIDv7) e relógio
 internal/bootstrap/      única camada que conhece o Uber Fx (módulos e composições)
 migrations/              migrations versionadas (up/down)
 deploy/localstack/       provisionamento idempotente das filas
-openspec/                especificações vivas (specs/) e histórico das mudanças (changes/archive/)
 ```
 
 `internal/domain` e `internal/app` não importam o Fx, nem HTTP, SQS ou PostgreSQL (verificado por teste).
